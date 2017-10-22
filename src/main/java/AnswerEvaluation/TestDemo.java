@@ -12,6 +12,8 @@ import edu.stanford.nlp.util.CoreMap;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Created by shankaragarwal on 30/06/17.
@@ -22,10 +24,17 @@ public class TestDemo {
     private static final double BETA = 5;
     StanfordCoreNLP pipeline;
     private static final int SUBJECT_WEIGHT = 200;
-    private static final int OBJECT_WEIGHT = 200;
     private static final int RELATION_WEIGHT = 100;
 
     private Stemmer stemmer;
+
+    public static void main(String[] args) throws Exception {
+        FactReader factReader = new FactReader();
+        HashMap<String,Integer> map = factReader.readFacts(3);
+        String humanAnswer = factReader.readBestAnswer(3);
+        TestDemo testDemo = new TestDemo();
+        testDemo.test(map,humanAnswer,0);
+    }
 
     public TestDemo(){
         Properties props = new Properties();
@@ -41,8 +50,13 @@ public class TestDemo {
         humanAnswer =cleanString(humanAnswer);
         int nonWhiteSpace = nonWhiteSpace(humanAnswer);
 
+
         HashMap<List<RelationTriple>,Integer> systemAnswers = breakIntoSentencesOpenNlp(answers);
         List<RelationTriple> humanAnswers = breakIntoSentencesOpenNlp(humanAnswer);
+
+//        for(RelationTriple triple:humanAnswers){
+//            printRelationTriple(triple);
+//        }
 
         HashMap<List<StemmedTriple>,FactInfo> stemmedSystemAnswers = new HashMap<>();
 
@@ -58,11 +72,64 @@ public class TestDemo {
 
         List<StemmedTriple> stemmedHumanAnswers = getStemmedTriples(humanAnswers);
 
+        for(StemmedTriple triple:stemmedHumanAnswers)
+            printStemmedTriple(triple);
+
+        System.out.println("The Answers");
+        it = stemmedSystemAnswers.entrySet().iterator();
+        while (it.hasNext()){
+            Map.Entry pair = (Map.Entry) it.next();
+            List<StemmedTriple> triples = (List<StemmedTriple>) pair.getKey();
+            for(StemmedTriple triple:triples)
+                printStemmedTriple(triple);
+        }
+
+
         double score = evaluateScore(stemmedHumanAnswers,stemmedSystemAnswers,nonWhiteSpace);
 
         System.out.println("Human Score "+ humanScore + " Algorithm score" + score);
 
 
+    }
+
+    private void printStemmedTriple(StemmedTriple triple) {
+        List<String> subjects =  triple.getSubjects();
+        List<String> relations =  triple.getRelation();
+        List<String> objects =  triple.getObjects();
+
+        for(String subject:subjects){
+            System.out.print(subject+" ");
+        }
+
+        for(String relation:relations){
+            System.out.print(relation+" ");
+        }
+
+        for(String object:objects){
+            System.out.print(object+" ");
+        }
+
+        System.out.println();
+    }
+
+    private void printRelationTriple(RelationTriple triple) {
+        List<CoreLabel> subjects =  triple.canonicalSubject;
+        List<CoreLabel> relations =  triple.relation;
+        List<CoreLabel> objects =  triple.object;
+
+        for(CoreLabel subject:subjects){
+            System.out.print(subject.word()+" ");
+        }
+
+        for(CoreLabel relation:relations){
+            System.out.print(relation.word()+" ");
+        }
+
+        for(CoreLabel object:objects){
+            System.out.print(object.word()+" ");
+        }
+
+        System.out.println();
     }
 
     private int nonWhiteSpace(String str) {
@@ -79,7 +146,6 @@ public class TestDemo {
                                  HashMap<List<StemmedTriple>, FactInfo> stemmedSystemAnswers,
                                  int nonWhiteSpace) {
 
-        double score =0;
         HashMap<FactInfo,Double> factScore = new HashMap<>();
         for(StemmedTriple humanAnswer:humanAnswers){
             Iterator it = stemmedSystemAnswers.entrySet().iterator();
@@ -142,23 +208,24 @@ public class TestDemo {
 
     private double getSimilarity(List<StemmedTriple> triples, StemmedTriple humanAnswer) {
         double score =0;
-        double totalWeight = SUBJECT_WEIGHT+OBJECT_WEIGHT+RELATION_WEIGHT;
+        double totalWeight = SUBJECT_WEIGHT+RELATION_WEIGHT;
         for(StemmedTriple triple:triples){
             double confidence = triple.getScore();
-            List<String> inferedSubjects = triple.getSubjects();
-            List<String> humanSubjects = humanAnswer.getSubjects();
-            double subjectSimilarity = getSubjectSimilarity(inferedSubjects,humanSubjects);
+            String answerSubject = getStringFromList(triple.getSubjects());
+            String humanSubjects = getStringFromList(humanAnswer.getSubjects());
 
-            List<String> inferredObjects = triple.getObjects();
-            List<String> humanObjects = humanAnswer.getObjects();
-            double objectSimilarity = getSubjectSimilarity(inferedSubjects,inferredObjects);
+            String answerObjects = getStringFromList(triple.getObjects());
+            String humanObjects = getStringFromList(humanAnswer.getObjects());
+
+            double subjectSimilarity =getSubjectSimilarity(answerSubject,answerObjects,
+                    humanSubjects,humanObjects);
+
 
             List<String> inferredRelations = triple.getRelation();
             List<String> humanRelations = humanAnswer.getRelation();
             double relationSimilarity = getRelationSimilarity(inferredRelations,humanRelations);
 
             double similarity = (SUBJECT_WEIGHT/totalWeight)*subjectSimilarity +
-                    (OBJECT_WEIGHT/totalWeight)*objectSimilarity +
                     (RELATION_WEIGHT/totalWeight)*relationSimilarity;
 
             similarity = similarity*confidence;
@@ -170,6 +237,19 @@ public class TestDemo {
         return score;
     }
 
+    private double getSubjectSimilarity(String answerSubject, String answerObjects, String humanSubjects, String humanObjects) {
+        double maxScore =0;
+        maxScore = (getStringSimilarity(answerSubject,humanSubjects)+
+                getStringSimilarity(answerObjects,humanObjects))/2;
+
+        double score = (getStringSimilarity(answerSubject,humanObjects)+
+                getStringSimilarity(answerObjects,humanSubjects))/2;
+
+        if(score>maxScore)
+            maxScore = score;
+        return maxScore;
+    }
+
     private double getRelationSimilarity(List<String> inferredRelations, List<String> humanRelations) {
         String inferredRelationString = getStringFromList(inferredRelations);
         String humanRelationString = getStringFromList(humanRelations);
@@ -178,7 +258,10 @@ public class TestDemo {
         System.out.println(" Inferred --- " + inferredRelationString);
         System.out.println(" Human --- " + humanRelationString);
         System.out.println("-----------------------------------------------");
-        return 0;
+        double similarity = WUPSimilarity.similarity(inferredRelationString,
+                humanRelationString);
+        System.out.println(similarity);
+        return similarity;
     }
 
     private String getStringFromList(List<String> inferredRelations) {
@@ -187,10 +270,6 @@ public class TestDemo {
             builder.append(str+" ");
         }
         return builder.toString();
-    }
-
-    private double getSubjectSimilarity(List<String> inferedSubjects, List<String> humanSubjects) {
-        return 0;
     }
 
     private double getStringSimilarity(String a,String b){
@@ -229,14 +308,6 @@ public class TestDemo {
             result.add(stemmedTriple);
         }
         return result;
-    }
-
-    public static void main(String[] args) throws Exception {
-        FactReader factReader = new FactReader();
-        HashMap<String,Integer> map = factReader.readFacts(1);
-        String humanAnswer = factReader.readBestAnswer(1);
-        TestDemo testDemo = new TestDemo();
-        testDemo.test(map,humanAnswer,0);
     }
 
 
@@ -279,7 +350,6 @@ public class TestDemo {
                     StringBuilder newWords = new StringBuilder();
                     CorefChain.CorefMention reprMent = chain.getRepresentativeMention();
                     String pos = token.get(CoreAnnotations.PartOfSpeechAnnotation.class);
-                    System.out.println(pos+ " " + token.word()+ " "+ isPronoun(pos));
                     if (isPronoun(pos) && (token.index() <= reprMent.startIndex || token.index() >= reprMent.endIndex)) {
 
                         for (int i = reprMent.startIndex; i < reprMent.endIndex; i++) {
@@ -306,38 +376,40 @@ public class TestDemo {
 
 
         StringBuilder resolvedStr = new StringBuilder();
-        System.out.println();
         for (String str : resolved) {
             resolvedStr.append(str).append(" ");
         }
-        System.out.println(resolvedStr);
-
         return resolvedStr.toString();
     }
 
 
-    public List<RelationTriple> breakIntoSentencesOpenNlp(String text) throws  IOException
+    public List<RelationTriple> breakIntoSentencesOpenNlp(String answer) throws  IOException
     {
 
 
-        Annotation document = new Annotation(text);
-
-        pipeline.annotate(document);
-
-        List<CoreMap> sentences = document.get(CoreAnnotations.SentencesAnnotation.class);
         List<RelationTriple> resultTriples = new ArrayList<>();
 
-        for(CoreMap coreMap: sentences) {
-            Sentence sentence = new Sentence(coreMap);
-            try {
-//                System.out.println(sentence.text());
-                Collection<RelationTriple> triples = sentence.openieTriples();
-                resultTriples.addAll(triples);
-            }
-            catch (Exception exp){
-//                exp.printStackTrace();
-            }
+        Pattern re = Pattern.compile("[^.!?\\s][^.!?]*(?:[.!?](?!['\"]?\\s|$)[^.!?]*)*[.!?]?['\"]?(?=\\s|$)", Pattern.MULTILINE | Pattern.COMMENTS);
+        Matcher reMatcher = re.matcher(answer);
+        while (reMatcher.find()) {
+            String text = reMatcher.group();
+            Annotation document = new Annotation(text);
 
+            pipeline.annotate(document);
+
+            List<CoreMap> sentences = document.get(CoreAnnotations.SentencesAnnotation.class);
+
+            for (CoreMap coreMap : sentences) {
+                Sentence sentence = new Sentence(coreMap);
+                try {
+//                System.out.println(sentence.text());
+                    Collection<RelationTriple> triples = sentence.openieTriples();
+                    resultTriples.addAll(triples);
+                } catch (Exception exp) {
+//                exp.printStackTrace();
+                }
+
+            }
         }
         return resultTriples;
     }
@@ -360,11 +432,14 @@ public class TestDemo {
             for (CoreMap coreMap : sentences) {
                 Sentence sentence = new Sentence(coreMap);
                 try {
-//                System.out.println(sentence.text());
+//                    System.out.println(sentence.text());
                     Collection<RelationTriple> triples = sentence.openieTriples();
+                    for(RelationTriple triple:triples){
+                        printRelationTriple(triple);
+                    }
                     resultTriples.addAll(triples);
                 } catch (Exception exp) {
-//                exp.printStackTrace();
+                    exp.printStackTrace();
                 }
 
             }
