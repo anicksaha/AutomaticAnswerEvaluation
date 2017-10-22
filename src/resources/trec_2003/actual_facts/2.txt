@@ -1,0 +1,6 @@
+1905 1	vital	Golden Parachute Agreement between companies and top executives
+1905 2	vital	Golden Parachute Provides remuneration to executives who lose jobs
+1905 3	vital	Golden Parachute Remuneration is usually very generous
+1905 4	okay	Golden Parachute Encourages execs not to resist takeover beneficial to shareholders
+1905 5	okay	Golden Parachute Incentive for execs to join companies
+1905 6	okay	Golden Parachute Arrangement for which IRS can impose excise tax

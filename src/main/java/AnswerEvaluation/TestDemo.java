@@ -7,14 +7,10 @@ import edu.stanford.nlp.ling.CoreAnnotations;
 import edu.stanford.nlp.ling.CoreLabel;
 import edu.stanford.nlp.pipeline.Annotation;
 import edu.stanford.nlp.pipeline.StanfordCoreNLP;
-import edu.stanford.nlp.semgraph.SemanticGraph;
-import edu.stanford.nlp.semgraph.SemanticGraphCoreAnnotations;
 import edu.stanford.nlp.simple.Sentence;
-import edu.stanford.nlp.trees.Tree;
-import edu.stanford.nlp.trees.TreeCoreAnnotations;
 import edu.stanford.nlp.util.CoreMap;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
 
 /**
@@ -22,114 +18,227 @@ import java.util.*;
  */
 public class TestDemo {
 
+    private static final double THRESHOLD = 0.5;
+    private static final double BETA = 5;
     StanfordCoreNLP pipeline;
+    private static final int SUBJECT_WEIGHT = 200;
+    private static final int OBJECT_WEIGHT = 200;
+    private static final int RELATION_WEIGHT = 100;
+
+    private Stemmer stemmer;
 
     public TestDemo(){
         Properties props = new Properties();
         props.setProperty("annotators", "tokenize,ssplit,pos,lemma,depparse,natlog,openie,ner,parse,dcoref,dcoref,entitymentions,entitylink");
         pipeline = new StanfordCoreNLP(props);
+        stemmer = new Stemmer();
 
     }
 
-    private void testParsing(String text){
-        Annotation document = new Annotation(text);
+    public void test(HashMap<String,Integer> answers, String humanAnswer, double humanScore) throws IOException {
 
-        // run all Annotators on this text
-        pipeline.annotate(document);
 
-        // these are all the sentences in this document
-        // a CoreMap is essentially a Map that uses class objects as keys and has values with custom types
-        List<CoreMap> sentences = document.get(CoreAnnotations.SentencesAnnotation.class);
+        humanAnswer =cleanString(humanAnswer);
+        int nonWhiteSpace = nonWhiteSpace(humanAnswer);
 
-        for(CoreMap sentence: sentences) {
-            // traversing the words in the current sentence
-            // a CoreLabel is a CoreMap with additional token-specific methods
-            for (CoreLabel token: sentence.get(CoreAnnotations.TokensAnnotation.class)) {
-                // this is the text of the token
-                String word = token.get(CoreAnnotations.TextAnnotation.class);
-                // this is the POS tag of the token
-                String pos = token.get(CoreAnnotations.PartOfSpeechAnnotation.class);
-                // this is the NER label of the token
-                String ne = token.get(CoreAnnotations.NamedEntityTagAnnotation.class);
+        HashMap<List<RelationTriple>,Integer> systemAnswers = breakIntoSentencesOpenNlp(answers);
+        List<RelationTriple> humanAnswers = breakIntoSentencesOpenNlp(humanAnswer);
 
-//                System.out.println("word: " + word + " pos: " + pos + " ne:" + ne);
-            }
+        HashMap<List<StemmedTriple>,FactInfo> stemmedSystemAnswers = new HashMap<>();
 
-            // this is the parse tree of the current sentence
-            Tree tree = sentence.get(TreeCoreAnnotations.TreeAnnotation.class);
-            System.out.println("parse tree:\n" + tree);
-
-            // this is the Stanford dependency graph of the current sentence
-            SemanticGraph dependencies = sentence.get(SemanticGraphCoreAnnotations.CollapsedCCProcessedDependenciesAnnotation.class);
-            System.out.println("dependency graph:\n" + dependencies);
+        Iterator it = systemAnswers.entrySet().iterator();
+        int id =1;
+        while (it.hasNext()) {
+            Map.Entry pair = (Map.Entry) it.next();
+            List<RelationTriple> triples = (List<RelationTriple>) pair.getKey();
+            List<StemmedTriple> stemmedTriples = getStemmedTriples(triples);
+            FactInfo factInfo = new FactInfo(id, (Integer) pair.getValue());
+            stemmedSystemAnswers.put(stemmedTriples, factInfo);
         }
 
-        // This is the coreference link graph
-        // Each chain stores a set of mentions that link to each other,
-        // along with a method for getting the most representative mention
-        // Both sentence and token offsets start at 1!
-        Map<Integer, CorefChain> graph =
-                document.get(CorefCoreAnnotations.CorefChainAnnotation.class);
-    }
+        List<StemmedTriple> stemmedHumanAnswers = getStemmedTriples(humanAnswers);
 
-    public void test() throws IOException {
+        double score = evaluateScore(stemmedHumanAnswers,stemmedSystemAnswers,nonWhiteSpace);
 
-        String testString = "Football is played by Anil . Anil is a good soccer player";
-        String answer = "Anil plays football and he is a good soccer player";
+        System.out.println("Human Score "+ humanScore + " Algorithm score" + score);
 
-        testParsing(answer);
-
-//        breakIntoSentencesOpenNlp(testString);
-//        breakIntoSentencesOpenNlp(answer);
-
-
-//        System.out.println(testString);
-//        System.out.println(answer);
-//
-//        List<RelationTriple> testTriples = breakIntoSentencesOpenNlp(testString);
-//        List<RelationTriple> answerTriples = breakIntoSentencesOpenNlp(answer);
-//
-//        float score = 0.0f;
-//
-//        System.out.println(answerTriples);
-//        System.out.println(testTriples);
-//
-////        for(RelationTriple answerTriple:answerTriples){
-////            for(RelationTriple testTriple:testTriples){
-////                if(equality(answerTriple,testTriple)){
-////                    score += 1.0f;
-////                }
-////            }
-////        }
-//
-////        score = score/(answerTriples.size());
-//        System.out.println(score);
 
     }
 
-    private void sentenceAnnotation(String testString) {
+    private int nonWhiteSpace(String str) {
+        int nonSpaceCount = 0;
+        for (char c : str.toCharArray()) {
+            if (c != ' ') {
+                nonSpaceCount++;
+            }
+        }
+        return nonSpaceCount;
+    }
 
+    private double evaluateScore(List<StemmedTriple> humanAnswers,
+                                 HashMap<List<StemmedTriple>, FactInfo> stemmedSystemAnswers,
+                                 int nonWhiteSpace) {
+
+        double score =0;
+        HashMap<FactInfo,Double> factScore = new HashMap<>();
+        for(StemmedTriple humanAnswer:humanAnswers){
+            Iterator it = stemmedSystemAnswers.entrySet().iterator();
+            while (it.hasNext()){
+                Map.Entry pair = (Map.Entry) it.next();
+                FactInfo factInfo = (FactInfo) pair.getValue();
+                List<StemmedTriple> triples = (List<StemmedTriple>) pair.getKey();
+                double similarity = getSimilarity(triples,humanAnswer);
+                double currentSimilarity =factScore.getOrDefault(factInfo,0.0);
+                if(similarity>currentSimilarity){
+                    factScore.put(factInfo,similarity);
+                }
+            }
+        }
+
+        Iterator it = factScore.entrySet().iterator();
+        int r =0;
+        int a =0;
+        while (it.hasNext()){
+            Map.Entry pair = (Map.Entry) it.next();
+            FactInfo factInfo = (FactInfo) pair.getKey();
+            double similarity = (double) pair.getValue();
+            
+            if(similarity>THRESHOLD){
+                switch (factInfo.score){
+                    case 1:
+                        r++;
+                        break;
+                    case 2:
+                        a++;
+                }
+            }
+
+        }
+
+        int R =0;
+
+        it = stemmedSystemAnswers.entrySet().iterator();
+        while (it.hasNext()){
+            Map.Entry pair = (Map.Entry) it.next();
+            FactInfo factInfo = (FactInfo) pair.getValue();
+            if(factInfo.score ==1)
+                R++;
+        }
+
+        double recall = ((double)r)/R;
+        double allowance = 100 * (r+a);
+        double precision;
+
+        if(nonWhiteSpace<allowance){
+            precision = 1;
+        }
+        else {
+            precision = 1- (nonWhiteSpace-allowance)/nonWhiteSpace;
+        }
+        double F = ((BETA*BETA +1)* precision*recall)/(BETA*BETA*precision + recall);
+        return F;
+
+    }
+
+    private double getSimilarity(List<StemmedTriple> triples, StemmedTriple humanAnswer) {
+        double score =0;
+        double totalWeight = SUBJECT_WEIGHT+OBJECT_WEIGHT+RELATION_WEIGHT;
+        for(StemmedTriple triple:triples){
+            double confidence = triple.getScore();
+            List<String> inferedSubjects = triple.getSubjects();
+            List<String> humanSubjects = humanAnswer.getSubjects();
+            double subjectSimilarity = getSubjectSimilarity(inferedSubjects,humanSubjects);
+
+            List<String> inferredObjects = triple.getObjects();
+            List<String> humanObjects = humanAnswer.getObjects();
+            double objectSimilarity = getSubjectSimilarity(inferedSubjects,inferredObjects);
+
+            List<String> inferredRelations = triple.getRelation();
+            List<String> humanRelations = humanAnswer.getRelation();
+            double relationSimilarity = getRelationSimilarity(inferredRelations,humanRelations);
+
+            double similarity = (SUBJECT_WEIGHT/totalWeight)*subjectSimilarity +
+                    (OBJECT_WEIGHT/totalWeight)*objectSimilarity +
+                    (RELATION_WEIGHT/totalWeight)*relationSimilarity;
+
+            similarity = similarity*confidence;
+
+            if(similarity>score)
+                score = similarity;
+        }
+
+        return score;
+    }
+
+    private double getRelationSimilarity(List<String> inferredRelations, List<String> humanRelations) {
+        String inferredRelationString = getStringFromList(inferredRelations);
+        String humanRelationString = getStringFromList(humanRelations);
+
+        System.out.println(" Relation String ");
+        System.out.println(" Inferred --- " + inferredRelationString);
+        System.out.println(" Human --- " + humanRelationString);
+        System.out.println("-----------------------------------------------");
+        return 0;
+    }
+
+    private String getStringFromList(List<String> inferredRelations) {
+        StringBuilder builder = new StringBuilder();
+        for(String str:inferredRelations){
+            builder.append(str+" ");
+        }
+        return builder.toString();
+    }
+
+    private double getSubjectSimilarity(List<String> inferedSubjects, List<String> humanSubjects) {
+        return 0;
+    }
+
+    private double getStringSimilarity(String a,String b){
+        return 0;
+    }
+
+    private List<StemmedTriple> getStemmedTriples(List<RelationTriple> triples) {
+
+        List<StemmedTriple> result = new ArrayList<>();
+        for(RelationTriple triple:triples){
+
+            List<CoreLabel> subjects = triple.canonicalSubject;
+            List<CoreLabel> relations = triple.relation;
+            List<CoreLabel> objects = triple.object;
+            List<String> stemmedSubjects = new ArrayList<>();
+            List<String> stemmedRelations = new ArrayList<>();
+            List<String> stemmedObjects  = new ArrayList<>();
+
+            StemmedTriple stemmedTriple = new StemmedTriple();
+
+            for(CoreLabel label:subjects){
+                stemmedSubjects.add(stemmer.stem(label.word()));
+            }
+
+            for(CoreLabel coreLabel: relations){
+                stemmedRelations.add(stemmer.stem(coreLabel.word()));
+            }
+
+            for(CoreLabel coreLabel: objects){
+                stemmedObjects.add(stemmer.stem(coreLabel.word()));
+            }
+            stemmedTriple.setObjects(stemmedObjects);
+            stemmedTriple.setRelation(stemmedRelations);
+            stemmedTriple.setSubjects(stemmedSubjects);
+            stemmedTriple.setScore(triple.confidence);
+            result.add(stemmedTriple);
+        }
+        return result;
     }
 
     public static void main(String[] args) throws Exception {
+        FactReader factReader = new FactReader();
+        HashMap<String,Integer> map = factReader.readFacts(1);
+        String humanAnswer = factReader.readBestAnswer(1);
         TestDemo testDemo = new TestDemo();
-        testDemo.test();
+        testDemo.test(map,humanAnswer,0);
     }
 
-    private String cleanDocument(String path) throws IOException {
-        InputStream is = new FileInputStream(path);
-        BufferedReader buf = new BufferedReader(new InputStreamReader(is));
-        String line = buf.readLine();
-        StringBuilder sb = new StringBuilder();
-        while(line != null){
-            sb.append(line).append("\n");
-            line = buf.readLine();
-        }
-        String fileAsString = sb.toString();
-
-        return solveCoreferences(fileAsString);
-
-    }
 
     private String cleanString(String str){
         return solveCoreferences(str);
@@ -167,7 +276,7 @@ public class TestDemo {
                     int sentINdx = chain.getRepresentativeMention().sentNum -1;
                     CoreMap corefSentence = sentences.get(sentINdx);
                     List<CoreLabel> corefSentenceTokens = corefSentence.get(CoreAnnotations.TokensAnnotation.class);
-                    StringBuilder newwords = new StringBuilder();
+                    StringBuilder newWords = new StringBuilder();
                     CorefChain.CorefMention reprMent = chain.getRepresentativeMention();
                     String pos = token.get(CoreAnnotations.PartOfSpeechAnnotation.class);
                     System.out.println(pos+ " " + token.word()+ " "+ isPronoun(pos));
@@ -176,7 +285,7 @@ public class TestDemo {
                         for (int i = reprMent.startIndex; i < reprMent.endIndex; i++) {
                             CoreLabel matchedLabel = corefSentenceTokens.get(i - 1);
                             resolved.add(matchedLabel.word().replace("'s", ""));
-                            newwords.append(matchedLabel.word()).append(" ");
+                            newWords.append(matchedLabel.word()).append(" ");
 
                         }
                     }
@@ -206,48 +315,6 @@ public class TestDemo {
         return resolvedStr.toString();
     }
 
-    private static boolean equality(RelationTriple answerTriple, RelationTriple testTriple) {
-
-        System.out.println(answerTriple);
-        System.out.println(testTriple);
-
-        List<CoreLabel> subjectAnswer = answerTriple.canonicalSubject;
-        List<CoreLabel> testAnswer = testTriple.canonicalSubject;
-
-//        System.out.println("Subject Answers");
-//        printLabels(subjectAnswer);
-
-//        System.out.println("Subject Test");
-//        printLabels(subjectAnswer);
-
-        double confidenceAnswer =answerTriple.confidence;
-        double confidenceTest =testTriple.confidence;
-
-        List<CoreLabel> answerRelations = answerTriple.relation;
-        List<CoreLabel> testRelations = testTriple.relation;
-
-//        System.out.println("Relations Answers");
-//        printLabels(answerRelations);
-
-//        System.out.println("Relations Test");
-//        printLabels(testRelations);
-
-        List<CoreLabel> objectAnswer = answerTriple.canonicalObject;
-        List<CoreLabel> objectTest = testTriple.canonicalObject;
-
-//        System.out.println("Relations Answers");
-//        printLabels(objectAnswer);
-
-//        System.out.println("Relations Test");
-//        printLabels(objectTest);
-
-        return false;
-    }
-
-    private static void printLabels(List<CoreLabel> labels) {
-        for(CoreLabel label:labels)
-            System.out.println(label);
-    }
 
     public List<RelationTriple> breakIntoSentencesOpenNlp(String text) throws  IOException
     {
@@ -263,20 +330,62 @@ public class TestDemo {
         for(CoreMap coreMap: sentences) {
             Sentence sentence = new Sentence(coreMap);
             try {
-                System.out.println(sentence.text());
-//                Collection<RelationTriple> triples = sentence.openieTriples();
-//                resultTriples.addAll(triples);
+//                System.out.println(sentence.text());
+                Collection<RelationTriple> triples = sentence.openieTriples();
+                resultTriples.addAll(triples);
             }
             catch (Exception exp){
-                exp.printStackTrace();
+//                exp.printStackTrace();
             }
 
         }
         return resultTriples;
     }
 
+    public HashMap<List<RelationTriple>,Integer> breakIntoSentencesOpenNlp(HashMap<String,Integer> text) throws  IOException
+    {
+
+        HashMap<List<RelationTriple>,Integer> result = new HashMap<>();
+        Iterator it = text.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry pair = (Map.Entry) it.next();
+            String fact = (String) pair.getKey();
+            Annotation document = new Annotation(fact);
+
+            pipeline.annotate(document);
+
+            List<CoreMap> sentences = document.get(CoreAnnotations.SentencesAnnotation.class);
+            List<RelationTriple> resultTriples = new ArrayList<>();
+
+            for (CoreMap coreMap : sentences) {
+                Sentence sentence = new Sentence(coreMap);
+                try {
+//                System.out.println(sentence.text());
+                    Collection<RelationTriple> triples = sentence.openieTriples();
+                    resultTriples.addAll(triples);
+                } catch (Exception exp) {
+//                exp.printStackTrace();
+                }
+
+            }
+            result.put(resultTriples, (Integer) pair.getValue());
+        }
+
+        return result;
+    }
+
     private boolean isPronoun(String pos) {
         return pos.equals("PRP");
+    }
+
+    class FactInfo{
+        int factID;
+        int score;
+
+        public FactInfo(int factID, int score){
+            this.factID = factID;
+            this.score = score;
+        }
     }
 
 }
