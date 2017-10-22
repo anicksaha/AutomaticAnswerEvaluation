@@ -29,11 +29,12 @@ public class TestDemo {
     private Stemmer stemmer;
 
     public static void main(String[] args) throws Exception {
-        FactReader factReader = new FactReader();
-        HashMap<String,Integer> map = factReader.readFacts(3);
-        String humanAnswer = factReader.readBestAnswer(3);
-        TestDemo testDemo = new TestDemo();
-        testDemo.test(map,humanAnswer,0);
+//        FactReader factReader = new FactReader();
+//        HashMap<String,Integer> map = factReader.readFacts(3);
+//        String humanAnswer = factReader.readBestAnswer(3);
+//        TestDemo testDemo = new TestDemo();
+//        testDemo.test(map,humanAnswer,0);
+        System.out.print(WUPSimilarity.similarity(" has won","won"));
     }
 
     public TestDemo(){
